@@ -4,6 +4,8 @@ import UserInfo
 import Rating
 import Movie
 
+import Data.List
+
 type Column = String
 type TableSchema = [Column]
 type Field = String
@@ -91,11 +93,65 @@ instance Show Table where
   show = show_table
 
 {-
-
+  select from table
+  first we need to transform the list of names into a list of number
 -}
+get_column_index :: Table -> String -> Int
+get_column_index (Table h _) str = case elemIndex str h of
+                                      Just n -> n
+                                      Nothing -> -1 
 
+-- returns an integer list of the needed columns
+get_columns_index :: [String] -> Table -> [Int]
+get_columns_index list table@(Table h t) = map (get_column_index table) list
+
+-- selecting the columns
+select_columns :: [Int] -> Table -> [[Column]]
+select_columns (x:[]) (Table h t) = map (\x -> [x]) $ map head $ map (drop (x)) (h:t)
+select_columns (x:xs) table@(Table h t) = zipWith (++) (map (\x -> [x]) $ map head $ map (drop x) (h:t)) (select_columns xs table)
+
+-- make columns table
+select :: [String] -> Table -> Table
+select str table@(Table h t) = Table (head (select_columns (get_columns_index str table) table))
+                                      (tail (select_columns (get_columns_index str table) table))
+
+-- select with a limit
+select_limit :: [String] -> Integer -> Table -> Table
+select_limit str x table@(Table h t) = Table (head (select_columns (get_columns_index str table) table))
+                                      (take (fromInteger x) $ tail (select_columns (get_columns_index str table) table))
 
 data FilterCondition = Lt Field Integer | Eq Field String | In Field [String] | Not FilterCondition
+
+{-
+  different ways of filtering the table
+-}
+filter_func :: FilterCondition -> Table -> (Entry -> Bool)
+filter_func (Lt field no) t@(Table h _) = func_lt
+                                        where func_lt entry
+                                                | no > (read (head $ drop (get_column_index t field) entry) :: Integer) = True
+                                                | otherwise = False
+
+filter_func (Eq field str) t@(Table h _) = func_eq
+                                        where func_eq entry
+                                                | str == (head $ drop (get_column_index t field) entry) = True
+                                                | otherwise = False
+
+filter_func (In field l) t@(Table h _) = func_in
+                                        where func_in entry
+                                                | elem (head $ drop (get_column_index t field) entry) l = True
+                                                | otherwise = False
+
+filter_func (Not f_cond) t = func_not
+                              where func_not entry
+                                      | filter_func f_cond t entry = False
+                                      | otherwise = True
+
+filter_table :: FilterCondition -> Table -> Table
+filter_table l t@(Table h e) = Table h (filter (filter_func l t) e)
+
+filter_tables :: Table -> Table -> FilterCondition -> FilterCondition -> Table
+filter_tables t1@(Table h1 e1) t2@(Table h2 e2) f1 f2 =
+  (Table h1 ((filter (filter_func f1 t1) e1) ++ (filter (filter_func f2 t2) e2)))
 
 data Query = Filter FilterCondition Query |  
              Select [String] Query |
@@ -106,12 +162,36 @@ data Query = Filter FilterCondition Query |
 
 eval :: Query -> Table
 eval (Atom t) = t
+eval (Select str q) = select str $ eval q
+eval (SelectLimit str x q) = select_limit str x $ eval q
+eval (Filter f q) = filter_table f $ eval q
+eval ((Filter f1 q1) :|| (Filter f2 q2)) = filter_tables (eval q1) (eval q2) f1 f2
+
+{-
+  some test to see how these queries work
+-}
+get_zone :: String -> Table -> String
+get_zone id t@(Table h e) = concat $ head $ map (drop 4) $ filter (filter_func (Eq "user_id" id) t) e
 
 same_zone :: String -> Query
-same_zone = undefined
+same_zone id = Select ["user_id", "occupation"] $
+               Filter (Eq "zone" (get_zone id user_info)) $
+               Filter (Not (Eq "user_id" id)) $
+               Atom user_info           
 
 male_within_age :: Integer -> Integer -> Query
-male_within_age = undefined
+male_within_age lower_b upper_b =
+  Select ["occupation", "zone"] $
+  Filter (Not (Eq "age" (show lower_b))) $
+  Filter (Lt "age" upper_b) $
+  Filter (Not (Lt "age" lower_b)) $
+  Filter (Eq "sex" "M") $
+  Atom user_info
 
 mixed :: [String] -> [String] -> Int -> Query
-mixed = undefined
+mixed l1 l2 max = Select ["user_id"] $ 
+                  Filter (In "zone" l1) $ 
+                  Filter (In "occupation" l2) $ 
+                  Filter (Lt "age" (toInteger max)) $ 
+                  Atom user_info
+    
